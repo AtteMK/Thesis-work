@@ -23,7 +23,48 @@ class DataPreprocessor:
         self.scaler = StandardScaler()
         self.feature_names = None
         self.target_name = None
-
+        
+    def extract_heater_profile_features(self, heater_profiles: List[Dict]) -> np.ndarray:
+        """
+        Extract features from heater profiles.
+        
+        Args:
+            heater_profiles (List[Dict]): List of heater profile dictionaries
+            
+        Returns:
+            np.ndarray: Array of heater profile features
+        """
+        features = []
+        for profile in heater_profiles:
+            # Extract temperature and duration features
+            temps = [step['temperature'] for step in profile['steps']]
+            durations = [step['duration'] for step in profile['steps']]
+            
+            # Calculate statistics
+            features.extend([
+                np.mean(temps),
+                np.std(temps),
+                np.max(temps),
+                np.min(temps),
+                np.mean(durations),
+                np.std(durations),
+                profile['timeBase']
+            ])
+        
+        return np.array(features)
+    
+    def parse_timestamp(self, timestamp: str) -> float:
+        """
+        Parse ISO timestamp to Unix timestamp.
+        
+        Args:
+            timestamp (str): ISO format timestamp
+            
+        Returns:
+            float: Unix timestamp
+        """
+        return datetime.fromisoformat(timestamp.replace('Z', '+00:00')).timestamp()
+    
     def read_bmespecimen_file(self, file_path: str) -> Tuple[np.ndarray, float]:
         """
         Read and parse a .bmespecimen file.
@@ -44,7 +85,6 @@ class DataPreprocessor:
                 board_config = data['data']['boardConfig']
                 board_type = data['data']['boardType']
                 heater_profiles = data['data']['heaterProfiles']
-                specimen_data_points = data['data']['specimenDataPoints'][1,2,3,4]
                 
                 # Extract basic features
                 basic_features = np.array([
@@ -68,12 +108,147 @@ class DataPreprocessor:
                 # For now, we'll use the specimen ID as a placeholder target
                 target = specimen_data['id']
                 
-                print(features, target)
+                return features, target
         except Exception as e:
             logger.error(f"Error reading file {file_path}: {str(e)}")
             raise
-
-if __name__ == "__main__":
-    raw_data_dir = r"C:\Users\atte0\Documents\Thesis work\data\specimendata\laboratory_water_ethanol_5_v_alc_6_v_34.bmespecimen"
-    preprocessor = DataPreprocessor(raw_data_dir)
-    features, targets = preprocessor.process_all_files()
+    
+    def clean_data(self, features: np.ndarray, target: float) -> Tuple[np.ndarray, float]:
+        """
+        Clean the data by removing outliers and handling missing values.
+        
+        Args:
+            features (np.ndarray): Feature array
+            target (float): Target value
+            
+        Returns:
+            tuple: (cleaned_features, cleaned_target)
+        """
+        # Remove outliers using IQR method
+        Q1 = np.percentile(features, 25)
+        Q3 = np.percentile(features, 75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        
+        # Replace outliers with median
+        features_cleaned = np.clip(features, lower_bound, upper_bound)
+        
+        # Handle any NaN or infinite values
+        features_cleaned = np.nan_to_num(features_cleaned, nan=np.nanmedian(features_cleaned))
+        
+        return features_cleaned, target
+    
+    def process_all_files(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Process all .bmespecimen files in the directory.
+        
+        Returns:
+            tuple: (features_array, targets_array)
+        """
+        import glob
+        
+        all_features = []
+        all_targets = []
+        
+        file_paths = glob.glob(os.path.join(self.data_dir, "*.bmespecimen"))
+        logger.info(f"Found {len(file_paths)} files to process")
+        
+        for file_path in file_paths:
+            try:
+                features, target = self.read_bmespecimen_file(file_path)
+                features_cleaned, target_cleaned = self.clean_data(features, target)
+                
+                all_features.append(features_cleaned)
+                all_targets.append(target_cleaned)
+            except Exception as e:
+                logger.warning(f"Skipping file {file_path} due to error: {str(e)}")
+                continue
+        
+        if not all_features:
+            raise ValueError("No valid data files were processed")
+            
+        return np.array(all_features), np.array(all_targets)
+    
+    def save_processed_data(self, 
+                          features: np.ndarray, 
+                          targets: np.ndarray, 
+                          output_path: str):
+        """
+        Save processed data to an HDF5 file.
+        
+        Args:
+            features (np.ndarray): Processed features
+            targets (np.ndarray): Processed targets
+            output_path (str): Path to save the HDF5 file
+        """
+        with h5py.File(output_path, 'w') as f:
+            f.create_dataset('features', data=features)
+            f.create_dataset('targets', data=targets)
+            
+            # Save metadata
+            metadata = {
+                'num_samples': len(features),
+                'feature_dim': features.shape[1],
+                'target_dim': targets.shape[1] if len(targets.shape) > 1 else 1
+            }
+            for key, value in metadata.items():
+                f.attrs[key] = value
+    
+    def load_processed_data(self, file_path: str) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Load processed data from an HDF5 file.
+        
+        Args:
+            file_path (str): Path to the HDF5 file
+            
+        Returns:
+            tuple: (features, targets)
+        """
+        with h5py.File(file_path, 'r') as f:
+            features = f['features'][:]
+            targets = f['targets'][:]
+        return features, targets
+    
+    def prepare_training_data(self, 
+                            features: np.ndarray, 
+                            targets: np.ndarray,
+                            train_split: float = 0.8,
+                            random_seed: int = 42) -> Dict[str, np.ndarray]:
+        """
+        Prepare data for training by splitting into train/val sets and scaling.
+        
+        Args:
+            features (np.ndarray): Feature array
+            targets (np.ndarray): Target array
+            train_split (float): Proportion of data to use for training
+            random_seed (int): Random seed for reproducibility
+            
+        Returns:
+            dict: Dictionary containing train and validation sets
+        """
+        # Set random seed
+        np.random.seed(random_seed)
+        
+        # Split data
+        indices = np.random.permutation(len(features))
+        split_idx = int(len(features) * train_split)
+        
+        train_indices = indices[:split_idx]
+        val_indices = indices[split_idx:]
+        
+        # Scale features
+        features_scaled = self.scaler.fit_transform(features)
+        
+        # Create train and validation sets
+        train_data = {
+            'features': features_scaled[train_indices],
+            'targets': targets[train_indices]
+        }
+        
+        val_data = {
+            'features': features_scaled[val_indices],
+            'targets': targets[val_indices]
+        }
+        
+        return train_data, val_data 
