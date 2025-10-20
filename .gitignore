@@ -2,6 +2,7 @@
 __pycache__/
 data/
 visualizations/
+BME688_data/
 .h5
 .pth
 .gitconfig
