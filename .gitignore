@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+data/
+visualization/
+.h5
+.pth
