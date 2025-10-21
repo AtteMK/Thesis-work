@@ -93,6 +93,9 @@ def extract_bmespecimen_data(file_path: str) -> dict:
                 if idx < len(specimen_data_points):
                     point_map[key] = specimen_data_points[idx]
             mapped_data_points = [point_map]
+        
+        for i in mapped_data_points:
+            i["specimen_id"] = specimen_data['id']
 
         # --- Link specimenDataPoints to cycles by cycle_id ---
         if cycles and mapped_data_points:
@@ -127,11 +130,11 @@ def extract_bmespecimen_data(file_path: str) -> dict:
 
         # --- build final structured output ---
         extracted_data = {
-            "specimenData": specimen_info,
-            "heaterProfiles": heater_profiles,
-            "sensorConfigs": sensor_configs,
-            "cycles": cycles,
-            "dataColumns": data_columns,
+            #"specimenData": specimen_info,
+            #"heaterProfiles": heater_profiles,
+            #"sensorConfigs": sensor_configs,
+            #"cycles": cycles,
+            #"dataColumns": data_columns,
             "specimenDataPoints": mapped_data_points
         }
 
@@ -161,6 +164,26 @@ def save_processed_json(data: dict, input_path: str):
         logger.error(f"Failed to save processed JSON: {e}")
         raise
 
+def process_all_files(file_path) -> dict:
+
+    import glob
+
+    file_paths = glob.glob(os.path.join(file_path, "*.bmespecimen"))
+    logger.info(f"Found {len(file_paths)} files to process")
+
+    extracted_data_all = []
+
+    for file_path in file_paths:
+            try:
+                extracted_data = extract_bmespecimen_data(file_path)
+                
+                extracted_data_all.append(extracted_data)
+            except Exception as e:
+                logger.warning(f"Skipping file {file_path} due to error: {str(e)}")
+                continue
+
+    return extracted_data_all
+
 
 def main():
     if len(sys.argv) < 2:
@@ -169,14 +192,15 @@ def main():
 
     file_path = sys.argv[1]
 
-    if not os.path.isfile(file_path):
-        print(f"❌ File not found: {file_path}")
-        sys.exit(1)
-
-    logger.info(f"Processing file: {file_path}")
-
-    extracted_data = extract_bmespecimen_data(file_path)
-    save_processed_json(extracted_data, file_path)
+    if os.path.isdir(file_path):
+        extracted_data = process_all_files(file_path)
+        save_processed_json(extracted_data, file_path)
+        
+    else:
+        logger.info(f"Processing file: {file_path}")
+        
+        extracted_data = extract_bmespecimen_data(file_path)
+        save_processed_json(extracted_data, file_path)
 
 
 if __name__ == "__main__":
