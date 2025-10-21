@@ -65,7 +65,7 @@ class DataPreprocessor:
         """
         return datetime.fromisoformat(timestamp.replace('Z', '+00:00')).timestamp()
     
-    def read_bmespecimen_file(self, file_path: str) -> Tuple[np.ndarray, float]:
+    def read_bmespecimen_file(self, file_path: str) -> Tuple[np.ndarray, str]:
         """
         Read and parse a .bmespecimen file.
         
@@ -81,45 +81,44 @@ class DataPreprocessor:
                 
                 # Extract relevant data from the JSON structure
                 specimen_data = data['data']['specimenData']
-                measurement_session = data['data']['measurementSession']
-                board_config = data['data']['boardConfig']
-                board_type = data['data']['boardType']
+                specimen_data_poits = data['data']['specimenDataPoints']
                 heater_profiles = data['data']['heaterProfiles']
                 
                 # Extract basic features
-                basic_features = np.array([
-                    specimen_data['id'],
-                    specimen_data['startTime'],
-                    specimen_data['endTime'],
-                    self.parse_timestamp(specimen_data['createdAt']),
-                    self.parse_timestamp(specimen_data['updatedAt']),
-                    self.parse_timestamp(measurement_session['startTime']),
-                    self.parse_timestamp(measurement_session['endTime']),
-                    board_type['numSensors']
+                #basic_features = np.array([
+                #    specimen_data_poits[1],
+                #    specimen_data_poits[2],
+                #    specimen_data_poits[3],
+                #    specimen_data_poits[4]
+                #])
+                features = np.array([
+                    specimen_data_poits[1],
+                    specimen_data_poits[2],
+                    specimen_data_poits[3],
+                    specimen_data_poits[4]
                 ])
                 
                 # Extract heater profile features
                 heater_features = self.extract_heater_profile_features(heater_profiles)
                 
                 # Combine all features
-                features = np.concatenate([basic_features, heater_features])
+                #features = np.concatenate([basic_features, heater_features])
                 
-                # Extract target (modify based on your needs)
-                # For now, we'll use the specimen ID as a placeholder target
-                target = specimen_data['id']
+                # Target is now a string (specimen ID or other identifier)
+                target = str(specimen_data['id'])
                 
                 return features, target
         except Exception as e:
             logger.error(f"Error reading file {file_path}: {str(e)}")
             raise
     
-    def clean_data(self, features: np.ndarray, target: float) -> Tuple[np.ndarray, float]:
+    def clean_data(self, features: np.ndarray, target: str) -> Tuple[np.ndarray, str]:
         """
         Clean the data by removing outliers and handling missing values.
         
         Args:
             features (np.ndarray): Feature array
-            target (float): Target value
+            target (str): Target string
             
         Returns:
             tuple: (cleaned_features, cleaned_target)
@@ -168,7 +167,7 @@ class DataPreprocessor:
         if not all_features:
             raise ValueError("No valid data files were processed")
             
-        return np.array(all_features), np.array(all_targets)
+        return np.array(all_features), np.array(all_targets, dtype='U')
     
     def save_processed_data(self, 
                           features: np.ndarray, 
@@ -179,18 +178,21 @@ class DataPreprocessor:
         
         Args:
             features (np.ndarray): Processed features
-            targets (np.ndarray): Processed targets
+            targets (np.ndarray): Processed string targets
             output_path (str): Path to save the HDF5 file
         """
         with h5py.File(output_path, 'w') as f:
             f.create_dataset('features', data=features)
-            f.create_dataset('targets', data=targets)
+            
+            # Store string targets properly
+            string_dt = h5py.string_dtype(encoding='utf-8')
+            f.create_dataset('targets', data=targets, dtype=string_dt)
             
             # Save metadata
             metadata = {
                 'num_samples': len(features),
                 'feature_dim': features.shape[1],
-                'target_dim': targets.shape[1] if len(targets.shape) > 1 else 1
+                'target_type': 'string'
             }
             for key, value in metadata.items():
                 f.attrs[key] = value
@@ -207,7 +209,7 @@ class DataPreprocessor:
         """
         with h5py.File(file_path, 'r') as f:
             features = f['features'][:]
-            targets = f['targets'][:]
+            targets = f['targets'][:].astype(str)
         return features, targets
     
     def prepare_training_data(self, 
@@ -220,27 +222,24 @@ class DataPreprocessor:
         
         Args:
             features (np.ndarray): Feature array
-            targets (np.ndarray): Target array
+            targets (np.ndarray): Target array (string labels)
             train_split (float): Proportion of data to use for training
             random_seed (int): Random seed for reproducibility
             
         Returns:
             dict: Dictionary containing train and validation sets
         """
-        # Set random seed
         np.random.seed(random_seed)
         
-        # Split data
         indices = np.random.permutation(len(features))
         split_idx = int(len(features) * train_split)
         
         train_indices = indices[:split_idx]
         val_indices = indices[split_idx:]
         
-        # Scale features
+        # Scale features only
         features_scaled = self.scaler.fit_transform(features)
         
-        # Create train and validation sets
         train_data = {
             'features': features_scaled[train_indices],
             'targets': targets[train_indices]
@@ -251,4 +250,15 @@ class DataPreprocessor:
             'targets': targets[val_indices]
         }
         
-        return train_data, val_data 
+        return train_data, val_data
+
+
+if __name__ == "__main__":
+    data_dir = "./data/specimendata"  # Change this to your data folder
+    output_file = "./processed_data_test.h5"
+    
+    preprocessor = DataPreprocessor(data_dir)
+    features, targets = preprocessor.process_all_files()
+    preprocessor.save_processed_data(features, targets, output_file)
+    
+    logger.info(f"Processed data saved to {output_file}")
